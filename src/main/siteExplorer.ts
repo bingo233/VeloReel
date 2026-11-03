@@ -80,7 +80,10 @@ export async function exploreSite(options: ExploreOptions): Promise<SiteSamples>
       if (!search) {
         $('form').each((_index, element) => {
           const form = $(element)
-          if ((form.attr('method') || 'get').toLowerCase() !== 'get' || form.find('input[type="password"]').length) return
+          const method = (form.attr('method') || 'get').toLowerCase()
+          // 不少模板站搜索表单声明为 POST，但服务端同样接受 GET；
+          // 这里统一按 GET 模板生成候选，是否可用交给后续真实抓取验证。
+          if ((method !== 'get' && method !== 'post') || form.find('input[type="password"]').length) return
           const fields = form.find('input[name]:not([disabled])').filter((_i, field) => ['text', 'search', ''].includes(($(field).attr('type') || '').toLowerCase()))
           fields.each((_i, element) => {
             const field = $(element)
@@ -94,7 +97,7 @@ export async function exploreSite(options: ExploreOptions): Promise<SiteSamples>
               target.hash = ''
               const urlTemplate = target.toString().replace('__VIDEO_PLAYER_SEARCH_KEYWORD__', '{keyword}')
               add({
-                url: urlTemplate, label: `实际 GET 表单，输入字段 ${field.attr('name')}；${field.attr('placeholder') || form.attr('class') || ''}`,
+                url: urlTemplate, label: `${method === 'post' ? 'POST 表单转 GET 尝试' : '实际 GET 表单'}，输入字段 ${field.attr('name')}；${field.attr('placeholder') || form.attr('class') || ''}`,
                 sourceUrl: page.url, suggestedKind: 'search', needsKeyword: true,
                 search: { url: urlTemplate, urlTemplate }
               })

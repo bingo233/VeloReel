@@ -59,7 +59,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skipIntroSeconds: 0,
   skipOutroSeconds: 0,
   proxyPrefetchCount: 4,
-  proxyCacheMegabytes: 128
+  proxyCacheMegabytes: 128,
+  lanEnabled: false,
+  lanPort: 8790,
+  deviceName: '影梭'
 }
 
 export function episodeName(episode: Episode): string {

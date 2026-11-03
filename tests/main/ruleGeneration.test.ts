@@ -30,7 +30,7 @@ const validRule: SiteRule = {
   detail: { episodeListSelector: '.playlist a', episodeNameSelector: '@text', episodeUrlSelector: '@href' },
   streamExtraction: { primaryMode: 'sniffer', fallbackMode: 'sniffer' }
 }
-const failedRule: SiteRule = { ...validRule, search: { ...validRule.search, listSelector: '.macplus-vodlist li' } }
+const failedRule: SiteRule = { ...validRule, search: { ...validRule.search!, listSelector: '.macplus-vodlist li' } }
 
 function setup(homeHtml = home, searchHtml = html) {
   const fetcher = vi.fn<typeof fetch>(async (url) => {
@@ -102,7 +102,7 @@ describe('rules must work on real search samples before being saved', () => {
     const { generator, storage, model } = setup()
     model.mockResolvedValueOnce(JSON.stringify(failedRule)).mockResolvedValueOnce(JSON.stringify(validRule))
     const result = await generator.generate({ siteUrl, searchResultUrl: searchUrl })
-    expect(result.search.listSelector).toBe('.macplus-vodlist__media > li')
+    expect(result.search!.listSelector).toBe('.macplus-vodlist__media > li')
     expect(model).toHaveBeenCalledTimes(2)
     expect(model.mock.calls[1]![1].input).toContain('listSelector=.macplus-vodlist li')
     expect(storage.saveRule).toHaveBeenCalledOnce()
@@ -134,7 +134,7 @@ describe('rules must work on real search samples before being saved', () => {
 
   it('refuses a template that cannot substitute keywords', async () => {
     const { generator, storage, model } = setup()
-    model.mockResolvedValue(JSON.stringify({ ...validRule, search: { ...validRule.search, urlTemplate: searchUrl } }))
+    model.mockResolvedValue(JSON.stringify({ ...validRule, search: { ...validRule.search!, urlTemplate: searchUrl } }))
     await expect(generator.generate({ siteUrl })).rejects.toThrow('缺少 {keyword}')
     expect(storage.saveRule).not.toHaveBeenCalled()
   })
@@ -142,7 +142,7 @@ describe('rules must work on real search samples before being saved', () => {
   it('checks the generated search address as well as the supplied sample', async () => {
     const { generator, storage, fetcher, model } = setup()
     model.mockResolvedValue(JSON.stringify({
-      ...validRule, search: { ...validRule.search, urlTemplate: `${siteUrl}incorrect-search?wd={keyword}` }
+      ...validRule, search: { ...validRule.search!, urlTemplate: `${siteUrl}incorrect-search?wd={keyword}` }
     }))
     await expect(generator.generate({ siteUrl, searchResultUrl: searchUrl })).rejects.toThrow('规则未保存')
     expect(fetcher.mock.calls.some(([url]) => String(url).includes('incorrect-search'))).toBe(true)
@@ -156,9 +156,9 @@ describe('rules must work on real search samples before being saved', () => {
 
   it('validates the original page, even when a selector happens to work on simplified prompt HTML', async () => {
     const original = `<section class="search-results"><style>.title { color: red }</style>${html}</section>`
-    const wrongRule = { ...validRule, search: { ...validRule.search, listSelector: '.search-results > ul:nth-child(2) > li' } }
+    const wrongRule: SiteRule = { ...validRule, search: { ...validRule.search!, listSelector: '.search-results > ul:nth-child(2) > li' } }
     // The fixture contains a form and a heading before the result UL. Removing STYLE changes :nth-child().
-    wrongRule.search.listSelector = '.search-results > ul:nth-child(3) > li'
+    wrongRule.search!.listSelector = '.search-results > ul:nth-child(3) > li'
     const cleaned = __testing.cleanHtml(original, 'search')
     expect(parseSearchPage(wrongRule, cleaned, searchUrl)).toHaveLength(2)
     expect(parseSearchPage(wrongRule, original, searchUrl)).toHaveLength(0)

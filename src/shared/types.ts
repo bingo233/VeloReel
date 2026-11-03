@@ -17,18 +17,69 @@ export interface SnifferRule {
   excludeRegex?: string
 }
 
+/** API 声明式规则的一次请求定义。模板中可用 {keyword} / {detailUrl} / {episodeUrl} / {id} 占位。 */
+export interface ApiRequestSpec {
+  method?: 'GET' | 'POST'
+  urlTemplate: string
+  bodyTemplate?: string
+  headers?: Record<string, string>
+}
+
+/** API 规则：搜索接口到搜索结果列表的映射。路径为 JSONPath 子集（$.a.b[0]、[*]）。 */
+export interface ApiSearchSpec {
+  request: ApiRequestSpec
+  /** 指向结果数组的路径，例如 $.data.list。 */
+  list: string
+  /** 相对单个结果条目的路径。 */
+  title: string
+  detailUrl?: string
+  /** 用条目字段拼详情地址，形如 https://x.com/pc/detail/{id}，花括号内为条目字段路径。 */
+  detailUrlTemplate?: string
+  coverUrl?: string
+}
+
+/** API 规则：详情接口到剧集列表的映射。 */
+export interface ApiDetailSpec {
+  request: ApiRequestSpec
+  /** 从详情地址提取 {id} 的正则（第一个捕获组），请求模板需要 {id} 时使用。 */
+  idRegex?: string
+  title?: string
+  coverUrl?: string
+  description?: string
+  /** 指向剧集数组的路径。 */
+  episodes: string
+  episodeName: string
+  episodeUrl?: string
+  /** 用剧集字段拼播放页地址，花括号内为剧集字段路径。 */
+  episodeUrlTemplate?: string
+}
+
+/** API 规则：播放接口到流地址的映射（可选，缺省时回退浏览器嗅探）。 */
+export interface ApiStreamSpec {
+  request: ApiRequestSpec
+  idRegex?: string
+  /** 指向流地址的路径。 */
+  streamUrl: string
+}
+
 export interface SiteRule {
   siteId: string
   siteName: string
   baseUrl: string
-  search: {
+  /** selector：CSS 选择器规则（默认）；api：JSON 接口声明式规则。 */
+  ruleType?: 'selector' | 'api'
+  apiSearch?: ApiSearchSpec
+  apiDetail?: ApiDetailSpec
+  apiStream?: ApiStreamSpec
+  /** 以下三组仅 selector 规则使用。 */
+  search?: {
     urlTemplate: string
     listSelector: string
     titleSelector: string
     detailUrlSelector: string
     coverUrlSelector?: string
   }
-  detail: {
+  detail?: {
     titleSelector?: string
     coverUrlSelector?: string
     descriptionSelector?: string
@@ -38,7 +89,7 @@ export interface SiteRule {
     episodeNameSelector: string
     episodeUrlSelector: string
   }
-  streamExtraction: {
+  streamExtraction?: {
     primaryMode: 'static' | 'sniffer'
     staticRule?: StaticExtractionRule
     fallbackMode?: 'sniffer' | 'none'
@@ -177,6 +228,17 @@ export interface AppSettings {
   autoPlayNext: boolean
   proxyPrefetchCount: number
   proxyCacheMegabytes: number
+  lanEnabled: boolean
+  lanPort: number
+  deviceName: string
+}
+
+export interface LanStatus {
+  enabled: boolean
+  running: boolean
+  port: number
+  addresses: string[]
+  error: string
 }
 
 export interface RuleGenerateInput {
@@ -236,5 +298,8 @@ export interface DesktopApi {
     setApiKey(apiKey: string): Promise<void>
     clearApiKey(): Promise<void>
     testConnection(input: LlmConnectionTestInput): Promise<LlmConnectionTestResult>
+  }
+  lan: {
+    status(): Promise<LanStatus>
   }
 }

@@ -89,10 +89,14 @@ export function discoverSearchSample(
 
 /** The runtime parser is deliberately used here: a valid JSON shape is insufficient. */
 export function validateSearchSample(rule: SiteRule, sample: SearchSample): void {
-  if (!rule.search.urlTemplate.includes('{keyword}')) {
+  const search = rule.search
+  if (!search) {
+    throw new AppError('INVALID_SEARCH_RULE', 'API 规则无需搜索页选择器验证')
+  }
+  if (!search.urlTemplate.includes('{keyword}')) {
     throw new AppError('INVALID_SEARCH_RULE', '搜索地址模板缺少 {keyword}，无法替换搜索关键词。')
   }
-  if (sample.urlTemplate && rule.search.urlTemplate !== sample.urlTemplate) {
+  if (sample.urlTemplate && search.urlTemplate !== sample.urlTemplate) {
     throw new AppError('INVALID_SEARCH_RULE', `搜索地址模板与首页真实搜索表单不一致。应使用：${sample.urlTemplate}`)
   }
   let items
@@ -103,7 +107,7 @@ export function validateSearchSample(rule: SiteRule, sample: SearchSample): void
   }
   if (!items.length) {
     throw new AppError('INVALID_SEARCH_RULE',
-      `搜索规则未通过实际页面验证：listSelector=${rule.search.listSelector}，titleSelector=${rule.search.titleSelector}，detailUrlSelector=${rule.search.detailUrlSelector}，未解析到有效影片。搜索页：${sample.url}`)
+      `搜索规则未通过实际页面验证：listSelector=${search.listSelector}，titleSelector=${search.titleSelector}，detailUrlSelector=${search.detailUrlSelector}，未解析到有效影片。搜索页：${sample.url}`)
   }
   const normalize = (text: string) => text.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
   const keyword = sample.keyword ? normalize(sample.keyword) : ''

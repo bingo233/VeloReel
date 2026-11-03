@@ -6,8 +6,10 @@ import type {
   SiteRule,
   VodDetail
 } from '../shared/types'
+import { runApiDetail, runApiSearch } from './apiRuleEngine'
 import { AppError, errorMessage } from './errors'
-import { readResponseText, safeFetch, parseRemoteUrl } from './urlSafety'
+import { parseRemoteUrl } from './urlSafety'
+import { fetchHtmlWithJsChallenge } from './jsChallenge'
 import type { AppStorage } from './storage'
 
 const HTML_LIMIT = 3 * 1024 * 1024
@@ -41,25 +43,29 @@ function resolvePublicReference(value: string, pageUrl: string): string {
 }
 
 async function fetchHtml(url: string): Promise<{ html: string; finalUrl: string }> {
-  const response = await safeFetch(url, { headers: DEFAULT_HEADERS }, { timeoutMs: 15_000 })
-  if (!response.ok) {
-    await response.body?.cancel()
-    throw new AppError('UPSTREAM_HTTP_ERROR', `页面请求失败（HTTP ${response.status}）`)
+  const page = await fetchHtmlWithJsChallenge(
+    url,
+    { headers: DEFAULT_HEADERS },
+    { timeoutMs: 15_000 },
+    HTML_LIMIT
+  )
+  if (!page.ok) {
+    throw new AppError('UPSTREAM_HTTP_ERROR', `页面请求失败（HTTP ${page.status}）`)
   }
-  const html = await readResponseText(response, HTML_LIMIT)
-  return { html, finalUrl: response.url || url }
+  return { html: page.html, finalUrl: page.finalUrl }
 }
 
 export function parseSearchPage(rule: SiteRule, html: string, pageUrl: string): SearchResultItem[] {
   const $ = load(html)
+  const search = rule.search!
   const results: SearchResultItem[] = []
-  $(rule.search.listSelector).each((_index, element) => {
+  $(search.listSelector).each((_index, element) => {
     const scope = $(element)
-    const title = selectValue(scope, rule.search.titleSelector)
-    const detailUrl = resolvePublicReference(selectValue(scope, rule.search.detailUrlSelector), pageUrl)
+    const title = selectValue(scope, search.titleSelector)
+    const detailUrl = resolvePublicReference(selectValue(scope, search.detailUrlSelector), pageUrl)
     if (!title || !detailUrl) return
-    const coverUrl = rule.search.coverUrlSelector
-      ? resolvePublicReference(selectValue(scope, rule.search.coverUrlSelector), pageUrl)
+    const coverUrl = search.coverUrlSelector
+      ? resolvePublicReference(selectValue(scope, search.coverUrlSelector), pageUrl)
       : ''
     results.push({ siteId: rule.siteId, siteName: rule.siteName, title, coverUrl, detailUrl })
   })
@@ -79,11 +85,12 @@ function parseEpisodeNodes(
   rule: SiteRule,
   pageUrl: string
 ): Episode[] {
+  const detail = rule.detail!
   const episodes: Episode[] = []
-  scope.find(rule.detail.episodeListSelector).each((index: number, element: unknown) => {
+  scope.find(detail.episodeListSelector).each((index: number, element: unknown) => {
     const episodeScope = $(element as any)
-    const name = selectValue(episodeScope, rule.detail.episodeNameSelector) || `第 ${index + 1} 集`
-    const url = resolvePublicReference(selectValue(episodeScope, rule.detail.episodeUrlSelector), pageUrl)
+    const name = selectValue(episodeScope, detail.episodeNameSelector) || `第 ${index + 1} 集`
+    const url = resolvePublicReference(selectValue(episodeScope, detail.episodeUrlSelector), pageUrl)
     if (url) episodes.push({ name, url, episodeUrl: url, index })
   })
   return episodes
@@ -92,31 +99,32 @@ function parseEpisodeNodes(
 export function parseDetailPage(rule: SiteRule, html: string, pageUrl: string): VodDetail {
   const $ = load(html)
   const root = $.root()
-  const title = rule.detail.titleSelector
-    ? selectValue(root, rule.detail.titleSelector)
+  const detail = rule.detail!
+  const title = detail.titleSelector
+    ? selectValue(root, detail.titleSelector)
     : $('meta[property="og:title"]').attr('content')?.trim() || $('title').text().trim()
-  const coverRaw = rule.detail.coverUrlSelector
-    ? selectValue(root, rule.detail.coverUrlSelector)
+  const coverRaw = detail.coverUrlSelector
+    ? selectValue(root, detail.coverUrlSelector)
     : $('meta[property="og:image"]').attr('content') ?? ''
-  const description = rule.detail.descriptionSelector
-    ? selectValue(root, rule.detail.descriptionSelector)
+  const description = detail.descriptionSelector
+    ? selectValue(root, detail.descriptionSelector)
     : $('meta[name="description"]').attr('content')?.trim() ?? ''
-  const groupNames = rule.detail.playlistGroupSelector
-    ? $(rule.detail.playlistGroupSelector).map((_index, element) => $(element).text().replace(/\s+/g, ' ').trim()).get()
+  const groupNames = detail.playlistGroupSelector
+    ? $(detail.playlistGroupSelector).map((_index, element) => $(element).text().replace(/\s+/g, ' ').trim()).get()
     : []
   const playlistGroups: PlaylistGroup[] = []
 
-  if (rule.detail.episodeGroupSelector) {
-    $(rule.detail.episodeGroupSelector).each((index, element) => {
+  if (detail.episodeGroupSelector) {
+    $(detail.episodeGroupSelector).each((index, element) => {
       const episodes = parseEpisodeNodes($, $(element), rule, pageUrl)
       if (episodes.length) playlistGroups.push({ name: groupNames[index] || `线路 ${index + 1}`, episodes })
     })
   } else {
     const episodes: Episode[] = []
-    $(rule.detail.episodeListSelector).each((index, element) => {
+    $(detail.episodeListSelector).each((index, element) => {
       const scope = $(element)
-      const name = selectValue(scope, rule.detail.episodeNameSelector) || `第 ${index + 1} 集`
-      const url = resolvePublicReference(selectValue(scope, rule.detail.episodeUrlSelector), pageUrl)
+      const name = selectValue(scope, detail.episodeNameSelector) || `第 ${index + 1} 集`
+      const url = resolvePublicReference(selectValue(scope, detail.episodeUrlSelector), pageUrl)
       if (url) episodes.push({ name, url, episodeUrl: url, index })
     })
     if (episodes.length) playlistGroups.push({ name: groupNames[0] || '默认线路', episodes })
@@ -145,7 +153,10 @@ export class VodService {
     if (!rules.length) throw new AppError('NO_SITE_RULES', '请先添加至少一个站点规则')
 
     const settled = await Promise.allSettled(rules.map(async (rule) => {
-      const target = rule.search.urlTemplate.replaceAll('{keyword}', encodeURIComponent(keyword))
+      if (rule.ruleType === 'api') {
+        return runApiSearch(rule, keyword)
+      }
+      const target = rule.search!.urlTemplate.replaceAll('{keyword}', encodeURIComponent(keyword))
       const url = parseRemoteUrl(target, rule.baseUrl).toString()
       const { html, finalUrl } = await fetchHtml(url)
       return parseSearchPage(rule, html, finalUrl)
@@ -160,6 +171,9 @@ export class VodService {
 
   async detail(input: { siteId: string; detailUrl: string }): Promise<VodDetail> {
     const rule = this.requireRule(input.siteId)
+    if (rule.ruleType === 'api') {
+      return runApiDetail(rule, input.detailUrl)
+    }
     const url = parseRemoteUrl(input.detailUrl, rule.baseUrl).toString()
     const { html, finalUrl } = await fetchHtml(url)
     return parseDetailPage(rule, html, finalUrl)

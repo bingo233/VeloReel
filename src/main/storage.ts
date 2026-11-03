@@ -31,7 +31,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skipOutroSeconds: 0,
   autoPlayNext: true,
   proxyPrefetchCount: 4,
-  proxyCacheMegabytes: 128
+  proxyCacheMegabytes: 128,
+  lanEnabled: false,
+  lanPort: 8790,
+  deviceName: '影梭'
 }
 
 export function makeSeriesId(siteId: string, detailUrl: string): string {

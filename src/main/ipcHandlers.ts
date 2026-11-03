@@ -2,6 +2,7 @@ import { app, ipcMain, type WebContents } from 'electron'
 import { IPC } from '../shared/ipc'
 import type { AppSettings } from '../shared/types'
 import type { HlsProxyServer } from './hlsProxyServer'
+import type { LanService } from './lanService'
 import type { LlmRuleGenerator } from './llmRuleGenerator'
 import { testLlmConnection } from './llmConnectionTest'
 import type { AppStorage } from './storage'
@@ -16,6 +17,7 @@ interface Dependencies {
   resolver: StreamResolver
   proxy: HlsProxyServer
   ruleGenerator: LlmRuleGenerator
+  lan: LanService
   rendererUrl: string
   getPlayerContents: () => WebContents | undefined
 }
@@ -23,7 +25,7 @@ interface Dependencies {
 const channels = Object.values(IPC)
 
 export function registerIpcHandlers(deps: Dependencies): () => void {
-  const { storage, vod, resolver, proxy, ruleGenerator } = deps
+  const { storage, vod, resolver, proxy, ruleGenerator, lan } = deps
   for (const channel of channels) ipcMain.removeHandler(channel)
 
   const handle: typeof ipcMain.handle = (channel, listener) => {
@@ -102,13 +104,18 @@ export function registerIpcHandlers(deps: Dependencies): () => void {
   })
 
   handle(IPC.SETTINGS_GET, () => storage.getSettings())
-  handle(IPC.SETTINGS_SAVE, (_event, settings: Partial<AppSettings>) => storage.saveSettings(settings))
+  handle(IPC.SETTINGS_SAVE, async (_event, settings: Partial<AppSettings>) => {
+    const saved = storage.saveSettings(settings)
+    await lan.apply(saved)
+    return saved
+  })
   handle(IPC.SETTINGS_HAS_API_KEY, () => storage.hasApiKey())
   handle(IPC.SETTINGS_SET_API_KEY, (_event, apiKey: unknown) => {
     storage.saveApiKey(requireString(apiKey, 'API Key', 10_000))
   })
   handle(IPC.SETTINGS_CLEAR_API_KEY, () => storage.clearApiKey())
   handle(IPC.SETTINGS_TEST_CONNECTION, (_event, input: unknown) => testLlmConnection(input, storage))
+  handle(IPC.LAN_STATUS, () => lan.getStatus())
 
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel)

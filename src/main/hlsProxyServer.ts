@@ -205,6 +205,15 @@ export class HlsProxyServer {
   }
 
   register(extracted: ExtractedStream): StreamResolution {
+    return this.registerWithBase(extracted, (id) => `http://127.0.0.1:${this.port}/proxy/${id}`)
+  }
+
+  /** 供局域网客户端使用：入口 URL 指向 LAN 地址，清单内的子资源同样走 LAN。 */
+  registerLan(extracted: ExtractedStream, origin: string): StreamResolution {
+    return this.registerWithBase(extracted, (id) => `${origin}/lan/m/${id}`)
+  }
+
+  private registerWithBase(extracted: ExtractedStream, baseFor: (id: string) => string): StreamResolution {
     if (!this.server || !this.port) throw new AppError('PROXY_NOT_STARTED', '本地媒体代理尚未启动')
     parseRemoteUrl(extracted.url)
     if (this.sessions.size >= MAX_SESSIONS) {
@@ -232,7 +241,7 @@ export class HlsProxyServer {
     }
     this.sessions.set(id, session)
     const path = extracted.mediaType === 'hls' ? 'master.m3u8' : 'media'
-    const localUrl = `http://127.0.0.1:${this.port}/proxy/${id}/${path}`
+    const localUrl = `${baseFor(id)}/${path}`
     return {
       sessionId: id,
       localUrl,
@@ -283,10 +292,11 @@ export class HlsProxyServer {
       const session = this.sessions.get(sessionId)
       if (!session) { res.writeHead(404).end('Session expired'); return }
       session.lastAccess = Date.now()
+      const base = `http://127.0.0.1:${this.port}/proxy/${session.id}`
 
       if (match[2] === 'master.m3u8') {
         if (session.mediaType !== 'hls') throw new AppError('BAD_PROXY_REQUEST', '该会话不是 HLS')
-        await this.serveManifest(session, session.sourceUrl, req, res, 0)
+        await this.serveManifest(session, session.sourceUrl, req, res, 0, base)
       } else if (match[2] === 'media') {
         if (session.mediaType !== 'mp4') throw new AppError('BAD_PROXY_REQUEST', '该会话不是 MP4')
         await this.serveMp4(session, req, res)
@@ -295,7 +305,7 @@ export class HlsProxyServer {
         if (!resourceToken) { res.writeHead(404).end(); return }
         const resource = session.resources.get(resourceToken)
         if (!resource) { res.writeHead(404).end('Resource expired'); return }
-        if (resource.kind === 'manifest') await this.serveManifest(session, resource.url, req, res, resource.manifestDepth ?? 0)
+        if (resource.kind === 'manifest') await this.serveManifest(session, resource.url, req, res, resource.manifestDepth ?? 0, base)
         else await this.serveResource(session, resource, req, res)
       }
     } catch (error) {
@@ -307,12 +317,65 @@ export class HlsProxyServer {
     }
   }
 
+  /** 局域网媒体入口，返回 false 表示该路径不属于媒体路由。 */
+  async handleLanMedia(
+    req: IncomingMessage,
+    res: ServerResponse,
+    requestUrl: URL,
+    origin: string
+  ): Promise<boolean> {
+    const match = /^\/lan\/m\/([^/]+)\/(master\.m3u8|media|r\/([^/]+))$/.exec(requestUrl.pathname)
+    if (!match) return false
+
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Range')
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length,Content-Range,Accept-Ranges')
+    if (req.method === 'OPTIONS') { res.writeHead(204).end(); return true }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return true }
+
+    const sessionId = match[1]
+    if (!sessionId) { res.writeHead(404).end(); return true }
+    const session = this.sessions.get(sessionId)
+    if (!session) { res.writeHead(404).end('Session expired'); return true }
+    session.lastAccess = Date.now()
+    const base = `${origin}/lan/m/${session.id}`
+
+    try {
+      if (match[2] === 'master.m3u8') {
+        if (session.mediaType !== 'hls') throw new AppError('BAD_PROXY_REQUEST', '该会话不是 HLS')
+        await this.serveManifest(session, session.sourceUrl, req, res, 0, base)
+      } else if (match[2] === 'media') {
+        if (session.mediaType !== 'mp4') throw new AppError('BAD_PROXY_REQUEST', '该会话不是 MP4')
+        await this.serveMp4(session, req, res)
+      } else {
+        const resourceToken = match[3]
+        if (!resourceToken) { res.writeHead(404).end(); return true }
+        const resource = session.resources.get(resourceToken)
+        if (!resource) { res.writeHead(404).end('Resource expired'); return true }
+        if (resource.kind === 'manifest') {
+          await this.serveManifest(session, resource.url, req, res, resource.manifestDepth ?? 0, base)
+        } else {
+          await this.serveResource(session, resource, req, res)
+        }
+      }
+    } catch (error) {
+      if (!res.headersSent) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+        res.writeHead(error instanceof AppError ? 502 : 500)
+      }
+      if (!res.writableEnded) res.end(errorMessage(error))
+    }
+    return true
+  }
+
   private async serveManifest(
     session: ProxySession,
     url: string,
     req: IncomingMessage,
     res: ServerResponse,
-    depth: number
+    depth: number,
+    base: string
   ): Promise<void> {
     if (depth > 4) throw new AppError('MANIFEST_NESTING', 'HLS 清单嵌套层级过深')
     const response = await safeFetch(url, {
@@ -326,7 +389,7 @@ export class HlsProxyServer {
     const finalUrl = response.url || url
     const source = (await readResponseBuffer(response, MAX_MANIFEST_BYTES)).toString('utf8').replace(/^\uFEFF/, '')
     if (!source.trimStart().startsWith('#EXTM3U')) throw new AppError('INVALID_MANIFEST', '上游响应不是有效 HLS 清单')
-    const rewritten = this.rewriteManifest(session, source, finalUrl, depth)
+    const rewritten = this.rewriteManifest(session, source, finalUrl, depth, base)
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8')
     res.setHeader('Content-Length', Buffer.byteLength(rewritten))
     res.writeHead(200)
@@ -334,7 +397,7 @@ export class HlsProxyServer {
     else res.end(rewritten)
   }
 
-  private rewriteManifest(session: ProxySession, source: string, manifestUrl: string, depth: number): string {
+  private rewriteManifest(session: ProxySession, source: string, manifestUrl: string, depth: number, base: string): string {
     const lines = source.split(/\r?\n/)
     const variants: Array<{ infoIndex: number; uriIndex: number; bandwidth: number }> = []
     for (let index = 0; index < lines.length; index += 1) {
@@ -348,7 +411,7 @@ export class HlsProxyServer {
       }
       if (uriIndex < lines.length) variants.push({ infoIndex: index, uriIndex, bandwidth: parseBandwidth(currentLine) })
     }
-    if (variants.length) return this.reduceMasterManifest(session, lines, variants, manifestUrl, depth)
+    if (variants.length) return this.reduceMasterManifest(session, lines, variants, manifestUrl, depth, base)
 
     const output: string[] = []
     let pendingRange: string | undefined
@@ -363,7 +426,7 @@ export class HlsProxyServer {
         continue
       }
       if (line.startsWith('#')) {
-        output.push(this.rewriteTagUri(session, original, manifestUrl, depth))
+        output.push(this.rewriteTagUri(session, original, manifestUrl, depth, base))
         continue
       }
       const absolute = new URL(line, manifestUrl).toString()
@@ -371,7 +434,7 @@ export class HlsProxyServer {
       const resource = this.addResource(session, absolute, 'segment', true, index, pendingRange)
       if (resource.index === index) session.orderedSegments.push(resource.token)
       pendingRange = undefined
-      output.push(this.localResourceUrl(session, resource.token))
+      output.push(this.localResourceUrl(session, resource.token, base))
     }
     return output.join('\n')
   }
@@ -381,7 +444,8 @@ export class HlsProxyServer {
     lines: string[],
     variants: Array<{ infoIndex: number; uriIndex: number; bandwidth: number }>,
     manifestUrl: string,
-    depth: number
+    depth: number,
+    base: string
   ): string {
     const chosen = variants.sort((a, b) => b.bandwidth - a.bandwidth)[0]
     if (!chosen) throw new AppError('INVALID_MANIFEST', '主清单没有可用码率')
@@ -397,17 +461,17 @@ export class HlsProxyServer {
       const type = attribute(attrs, 'TYPE')?.toUpperCase()
       const groupId = attribute(attrs, 'GROUP-ID')
       if ((type === 'AUDIO' && groupId === audioGroup) || (type === 'SUBTITLES' && groupId === subtitleGroup)) {
-        output.push(this.rewriteTagUri(session, line, manifestUrl, depth))
+        output.push(this.rewriteTagUri(session, line, manifestUrl, depth, base))
       }
     }
     output.push(infoLine)
     const variantUrl = new URL(variantLine.trim(), manifestUrl).toString()
     const resource = this.addResource(session, variantUrl, 'manifest', true, undefined, undefined, depth + 1)
-    output.push(this.localResourceUrl(session, resource.token))
+    output.push(this.localResourceUrl(session, resource.token, base))
     return output.join('\n')
   }
 
-  private rewriteTagUri(session: ProxySession, line: string, manifestUrl: string, depth: number): string {
+  private rewriteTagUri(session: ProxySession, line: string, manifestUrl: string, depth: number, base: string): string {
     const uriMatch = /URI=(?:"([^"]*)"|'([^']*)'|([^,]*))/i.exec(line)
     if (!uriMatch) return line
     const raw = uriMatch[1] ?? uriMatch[2] ?? uriMatch[3]
@@ -422,7 +486,7 @@ export class HlsProxyServer {
       resource.index = session.orderedSegments.length
       session.orderedSegments.push(resource.token)
     }
-    return line.replace(uriMatch[0], `URI="${this.localResourceUrl(session, resource.token)}"`)
+    return line.replace(uriMatch[0], `URI="${this.localResourceUrl(session, resource.token, base)}"`)
   }
 
   private addResource(
@@ -448,8 +512,8 @@ export class HlsProxyServer {
     return resource
   }
 
-  private localResourceUrl(session: ProxySession, resourceToken: string): string {
-    return `http://127.0.0.1:${this.port}/proxy/${session.id}/r/${resourceToken}`
+  private localResourceUrl(session: ProxySession, resourceToken: string, base: string): string {
+    return `${base}/r/${resourceToken}`
   }
 
   private async serveResource(

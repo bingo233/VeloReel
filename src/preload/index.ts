@@ -49,6 +49,9 @@ const api: DesktopApi = {
     setApiKey: (apiKey: string) => ipcRenderer.invoke(IPC.SETTINGS_SET_API_KEY, apiKey),
     clearApiKey: () => ipcRenderer.invoke(IPC.SETTINGS_CLEAR_API_KEY),
     testConnection: (input) => ipcRenderer.invoke(IPC.SETTINGS_TEST_CONNECTION, input)
+  },
+  lan: {
+    status: () => ipcRenderer.invoke(IPC.LAN_STATUS)
   }
 }
 

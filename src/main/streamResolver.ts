@@ -25,7 +25,7 @@ interface CacheStorage {
 
 function cacheKey(pageUrl: string, rule: SiteRule): string {
   return createHash('sha256').update(JSON.stringify([
-    rule.siteId, rule.baseUrl, pageUrl, rule.streamExtraction
+    rule.siteId, rule.baseUrl, pageUrl, rule.streamExtraction, rule.apiStream
   ])).digest('hex')
 }
 

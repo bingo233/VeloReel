@@ -1,5 +1,9 @@
 import { validateHeaderName, validateHeaderValue } from 'node:http'
 import type {
+  ApiDetailSpec,
+  ApiRequestSpec,
+  ApiSearchSpec,
+  ApiStreamSpec,
   AppSettings,
   FavoriteInput,
   LlmApiType,
@@ -8,6 +12,7 @@ import type {
   StaticExtractionRule
 } from '../shared/types'
 import { AppError } from './errors'
+import { parseJsonPath } from './jsonPath'
 import { parseRemoteUrl } from './urlSafety'
 
 export function requireRecord(value: unknown, label = '参数'): Record<string, unknown> {
@@ -101,16 +106,133 @@ function assertStaticRule(value: unknown): StaticExtractionRule {
   return { regex, flags, decodePipeline: raw.decodePipeline as StaticExtractionRule['decodePipeline'], validUrlPattern }
 }
 
+function assertApiRequest(value: unknown, label: string): ApiRequestSpec {
+  const raw = requireRecord(value, label)
+  const method = raw.method === undefined ? 'GET' : requireString(raw.method, `${label} 方法`, 8).toUpperCase()
+  if (method !== 'GET' && method !== 'POST') {
+    throw new AppError('INVALID_RULE', `${label} 只支持 GET/POST`)
+  }
+  const headers = raw.headers === undefined ? undefined : requireRecord(raw.headers, `${label} 请求头`)
+  return {
+    method,
+    urlTemplate: requireString(raw.urlTemplate, `${label} 地址模板`, 2_048),
+    bodyTemplate: typeof raw.bodyTemplate === 'string'
+      ? requireString(raw.bodyTemplate, `${label} 请求体模板`, 16_384, true)
+      : undefined,
+    headers: headers
+      ? Object.fromEntries(
+          Object.entries(headers).map(([key, val]) => [
+            requireString(key, '请求头名称', 128),
+            requireString(val, '请求头内容', 2_048)
+          ])
+        )
+      : undefined
+  }
+}
+
+function assertJsonPath(value: unknown, label: string): string {
+  const path = requireString(value, label, 512)
+  try {
+    parseJsonPath(path)
+  } catch {
+    throw new AppError('INVALID_RULE', `${label} 不是合法的 JSONPath：${path}`)
+  }
+  return path
+}
+
+function assertIdRegex(value: unknown, label: string): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined
+  const regex = requireString(value, label, 512)
+  try {
+    new RegExp(regex)
+  } catch {
+    throw new AppError('INVALID_RULE', `${label} 无法编译`)
+  }
+  return regex
+}
+
+function assertApiSearch(value: unknown): ApiSearchSpec {
+  const raw = requireRecord(value, 'API 搜索规则')
+  const detailUrl = typeof raw.detailUrl === 'string' && raw.detailUrl
+    ? assertJsonPath(raw.detailUrl, '详情地址路径')
+    : undefined
+  const detailUrlTemplate = typeof raw.detailUrlTemplate === 'string' && raw.detailUrlTemplate
+    ? requireString(raw.detailUrlTemplate, '详情地址模板', 2_048, true)
+    : undefined
+  if (!detailUrl && !detailUrlTemplate) {
+    throw new AppError('INVALID_RULE', 'API 搜索规则需要 detailUrl 或 detailUrlTemplate')
+  }
+  return {
+    request: assertApiRequest(raw.request, 'API 搜索请求'),
+    list: assertJsonPath(raw.list, '搜索结果列表路径'),
+    title: assertJsonPath(raw.title, '标题路径'),
+    detailUrl,
+    detailUrlTemplate,
+    coverUrl: typeof raw.coverUrl === 'string' && raw.coverUrl ? assertJsonPath(raw.coverUrl, '封面路径') : undefined
+  }
+}
+
+function assertApiDetail(value: unknown): ApiDetailSpec {
+  const raw = requireRecord(value, 'API 详情规则')
+  const episodeUrl = typeof raw.episodeUrl === 'string' && raw.episodeUrl
+    ? assertJsonPath(raw.episodeUrl, '剧集地址路径')
+    : undefined
+  const episodeUrlTemplate = typeof raw.episodeUrlTemplate === 'string' && raw.episodeUrlTemplate
+    ? requireString(raw.episodeUrlTemplate, '剧集地址模板', 2_048, true)
+    : undefined
+  if (!episodeUrl && !episodeUrlTemplate) {
+    throw new AppError('INVALID_RULE', 'API 详情规则需要 episodeUrl 或 episodeUrlTemplate')
+  }
+  return {
+    request: assertApiRequest(raw.request, 'API 详情请求'),
+    idRegex: assertIdRegex(raw.idRegex, '详情 ID 正则'),
+    title: typeof raw.title === 'string' && raw.title ? assertJsonPath(raw.title, '详情标题路径') : undefined,
+    coverUrl: typeof raw.coverUrl === 'string' && raw.coverUrl ? assertJsonPath(raw.coverUrl, '详情封面路径') : undefined,
+    description: typeof raw.description === 'string' && raw.description ? assertJsonPath(raw.description, '详情简介路径') : undefined,
+    episodes: assertJsonPath(raw.episodes, '剧集列表路径'),
+    episodeName: assertJsonPath(raw.episodeName, '剧集名称路径'),
+    episodeUrl,
+    episodeUrlTemplate
+  }
+}
+
+function assertApiStream(value: unknown): ApiStreamSpec {
+  const raw = requireRecord(value, 'API 流规则')
+  return {
+    request: assertApiRequest(raw.request, 'API 流请求'),
+    idRegex: assertIdRegex(raw.idRegex, '播放 ID 正则'),
+    streamUrl: assertJsonPath(raw.streamUrl, '流地址路径')
+  }
+}
+
 export function assertSiteRule(value: unknown): SiteRule {
   const raw = requireRecord(value, '站点规则')
-  const search = requireRecord(raw.search, '搜索规则')
-  const detail = requireRecord(raw.detail, '详情规则')
-  const stream = requireRecord(raw.streamExtraction, '流提取规则')
   const baseUrl = parseRemoteUrl(requireString(raw.baseUrl, '站点地址')).toString()
   const siteId = requireString(raw.siteId, '站点 ID', 80)
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(siteId)) {
     throw new AppError('INVALID_RULE', '站点 ID 只能包含字母、数字、短横线和下划线')
   }
+  const common = {
+    siteId,
+    siteName: requireString(raw.siteName, '站点名称', 100),
+    baseUrl,
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : undefined
+  }
+
+  if (raw.ruleType === 'api') {
+    return {
+      ...common,
+      ruleType: 'api',
+      apiSearch: assertApiSearch(raw.apiSearch),
+      apiDetail: assertApiDetail(raw.apiDetail),
+      apiStream: raw.apiStream === undefined ? undefined : assertApiStream(raw.apiStream)
+    }
+  }
+
+  const search = requireRecord(raw.search, '搜索规则')
+  const detail = requireRecord(raw.detail, '详情规则')
+  const stream = requireRecord(raw.streamExtraction, '流提取规则')
   const primaryMode = stream.primaryMode === 'sniffer' ? 'sniffer' : 'static'
   const fallbackMode = stream.fallbackMode === 'none' ? 'none' : 'sniffer'
   const staticRule = stream.staticRule ? assertStaticRule(stream.staticRule) : undefined
@@ -133,9 +255,8 @@ export function assertSiteRule(value: unknown): SiteRule {
   }
 
   return {
-    siteId,
-    siteName: requireString(raw.siteName, '站点名称', 100),
-    baseUrl,
+    ...common,
+    ruleType: 'selector',
     search: {
       urlTemplate: requireString(search.urlTemplate, '搜索地址模板', 2_048),
       listSelector: assertSelector(search.listSelector, '搜索列表选择器'),
@@ -155,9 +276,7 @@ export function assertSiteRule(value: unknown): SiteRule {
       episodeNameSelector: assertSelector(detail.episodeNameSelector, '剧集名称选择器'),
       episodeUrlSelector: assertSelector(detail.episodeUrlSelector, '剧集地址选择器')
     },
-    streamExtraction: { primaryMode, staticRule, fallbackMode, snifferRule },
-    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
-    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : undefined
+    streamExtraction: { primaryMode, staticRule, fallbackMode, snifferRule }
   }
 }
 
@@ -219,7 +338,12 @@ export function sanitizeSettings(
     skipOutroSeconds: raw.skipOutroSeconds === undefined ? current.skipOutroSeconds : clamp(raw.skipOutroSeconds, 0, 900),
     autoPlayNext: typeof raw.autoPlayNext === 'boolean' ? raw.autoPlayNext : current.autoPlayNext,
     proxyPrefetchCount: raw.proxyPrefetchCount === undefined ? current.proxyPrefetchCount : clamp(raw.proxyPrefetchCount, 0, 8),
-    proxyCacheMegabytes: raw.proxyCacheMegabytes === undefined ? current.proxyCacheMegabytes : clamp(raw.proxyCacheMegabytes, 32, 512)
+    proxyCacheMegabytes: raw.proxyCacheMegabytes === undefined ? current.proxyCacheMegabytes : clamp(raw.proxyCacheMegabytes, 32, 512),
+    lanEnabled: typeof raw.lanEnabled === 'boolean' ? raw.lanEnabled : current.lanEnabled,
+    lanPort: raw.lanPort === undefined ? current.lanPort : clamp(raw.lanPort, 1024, 65535),
+    deviceName: typeof raw.deviceName === 'string' && raw.deviceName.trim().length > 0
+      ? raw.deviceName.trim().slice(0, 40)
+      : current.deviceName
   }
 }
 

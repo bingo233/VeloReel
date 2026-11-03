@@ -22,5 +22,6 @@ export const IPC = {
   SETTINGS_HAS_API_KEY: 'settings:has-api-key',
   SETTINGS_SET_API_KEY: 'settings:set-api-key',
   SETTINGS_CLEAR_API_KEY: 'settings:clear-api-key',
-  SETTINGS_TEST_CONNECTION: 'settings:test-connection'
+  SETTINGS_TEST_CONNECTION: 'settings:test-connection',
+  LAN_STATUS: 'lan:status'
 } as const

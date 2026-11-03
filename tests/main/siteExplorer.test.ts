@@ -66,6 +66,23 @@ describe('AI exploration from a single homepage', () => {
     expect(fetchPage.mock.calls.map(([url]) => url)).toEqual([entry, searchUrl, detailUrl, playUrl])
   })
 
+  it('converts a POST search form into a GET template candidate', async () => {
+    const postUrl = `${origin}/search.php?searchword=${encodeURIComponent('示例片')}`
+    const { options, fetchPage, decide, choose } = setup(
+      '<form action="/search.php" method="post"><input name="searchword" placeholder="搜索"></form><a href="/detail/1" title="示例片"></a>',
+      { [postUrl]: searchHtml }
+    )
+    decide.mockImplementation((state) => {
+      const form = state.candidates.find((candidate) => candidate.needsKeyword)
+      return state.missing.includes('search') && form
+        ? { candidateId: form.id, kind: 'search', keyword: '示例片' } : choose(state)
+    })
+    const samples = await exploreSite(options)
+    expect(fetchPage.mock.calls.map(([url]) => url)).toEqual([postUrl, detailUrl, playUrl])
+    expect(samples.search.url).toBe(postUrl)
+    expect(samples.search.urlTemplate).toBe(`${origin}/search.php?searchword={keyword}`)
+  })
+
   it('lets the model choose a query for an observed form with an unfamiliar field name', async () => {
     const customUrl = `${origin}/find?movie=${encodeURIComponent('示例片')}`
     const { options, decide, choose } = setup('<form action="/find"><input type="search" name="movie" placeholder="搜索影片"></form>', {

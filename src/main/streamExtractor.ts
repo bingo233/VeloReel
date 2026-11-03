@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import { BrowserWindow, session, type Session } from 'electron'
 import type { SiteRule, UpstreamHeaders } from '../shared/types'
+import { runApiStream } from './apiRuleEngine'
 import { AppError, errorMessage } from './errors'
 import { assertSafeRemoteUrl, parseRemoteUrl, readResponseText, safeFetch } from './urlSafety'
 import { SnifferProxy } from './snifferProxy'
@@ -20,7 +21,7 @@ export interface ExtractedStream {
   playPageHtml?: string
 }
 
-function decodeCandidate(initial: string, pipeline: NonNullable<SiteRule['streamExtraction']['staticRule']>['decodePipeline']): string {
+function decodeCandidate(initial: string, pipeline: NonNullable<NonNullable<SiteRule['streamExtraction']>['staticRule']>['decodePipeline']): string {
   let value: unknown = initial
   for (const step of pipeline) {
     const text = typeof value === 'string' ? value : JSON.stringify(value)
@@ -97,7 +98,7 @@ async function execRegexWithTimeout(
 export async function extractStaticUrlFromHtml(
   html: string,
   pageUrl: string,
-  staticRule: NonNullable<SiteRule['streamExtraction']['staticRule']>
+  staticRule: NonNullable<NonNullable<SiteRule['streamExtraction']>['staticRule']>
 ): Promise<string> {
   const flags = (staticRule.flags ?? '').replace(/[gy]/g, '')
   const captured = await execRegexWithTimeout(staticRule.regex, flags, html.slice(0, STATIC_REGEX_INPUT_LIMIT))
@@ -126,7 +127,7 @@ function filterCapturedHeaders(headers: Record<string, string | string[]>): Upst
 }
 
 async function staticExtract(playPageUrl: string, rule: SiteRule): Promise<ExtractedStream> {
-  const staticRule = rule.streamExtraction.staticRule
+  const staticRule = rule.streamExtraction?.staticRule
   if (!staticRule) throw new AppError('STATIC_RULE_MISSING', '站点没有配置静态流提取规则')
   const response = await safeFetch(playPageUrl, {
     headers: { 'user-agent': USER_AGENT, referer: rule.baseUrl, accept: 'text/html,application/xhtml+xml' }
@@ -222,12 +223,25 @@ export class StreamExtractor {
     const playPageUrl = (await assertSafeRemoteUrl(new URL(playPageUrlValue, rule.baseUrl))).toString()
     const errors: string[] = []
 
-    if (rule.streamExtraction.primaryMode === 'static') {
+    // API 规则：优先按声明式接口取流，失败或缺省再回退嗅探。
+    if (rule.apiStream) {
+      try {
+        const { url, mediaType } = await runApiStream(rule, playPageUrl)
+        await assertSafeRemoteUrl(new URL(url))
+        return { url, mediaType, extractedBy: 'static', headers: { referer: playPageUrl, origin: new URL(rule.baseUrl).origin } }
+      } catch (error) {
+        errors.push(errorMessage(error))
+        if (!rule.streamExtraction) throw new AppError('STREAM_RESOLVE_FAILED', `无法解析视频流：${errors.join('；')}`)
+      }
+    }
+
+    const extraction = rule.streamExtraction ?? { primaryMode: 'sniffer' as const }
+    if (extraction.primaryMode === 'static') {
       try {
         return await staticExtract(playPageUrl, rule)
       } catch (error) {
         errors.push(errorMessage(error))
-        if (rule.streamExtraction.fallbackMode === 'none') throw error
+        if (extraction.fallbackMode === 'none') throw error
       }
     }
 
@@ -235,7 +249,7 @@ export class StreamExtractor {
       return await this.sniff(playPageUrl, rule)
     } catch (error) {
       errors.push(errorMessage(error))
-      if (rule.streamExtraction.primaryMode === 'sniffer' && rule.streamExtraction.staticRule) {
+      if (extraction.primaryMode === 'sniffer' && extraction.staticRule) {
         try { return await staticExtract(playPageUrl, rule) } catch (staticError) { errors.push(errorMessage(staticError)) }
       }
       throw new AppError('STREAM_RESOLVE_FAILED', `无法解析视频流：${errors.join('；')}`)
@@ -253,7 +267,7 @@ export class StreamExtractor {
       throw new AppError('SNIFFER_BUSY', '同时解析的站点过多，请稍后重试')
     }
     this.startingSniffers += 1
-    const snifferRule = rule.streamExtraction.snifferRule ?? {
+    const snifferRule = rule.streamExtraction?.snifferRule ?? {
       timeoutMs: 10_000,
       urlMatchRegex: '\\.(m3u8|mp4)(\\?.*)?$',
       excludeRegex: '(ad|tracker|analytics|doubleclick)'

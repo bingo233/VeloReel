@@ -312,9 +312,16 @@ onUnmounted(() => stopGenerationProgress?.())
           </div>
           <span class="rule-host">{{ safeHostname(rule.baseUrl) }}</span>
           <div class="rule-capabilities">
-            <span><UiIcon name="check" :size="12" />搜索</span>
-            <span><UiIcon name="check" :size="12" />选集</span>
-            <span><UiIcon name="check" :size="12" />{{ rule.streamExtraction.fallbackMode === 'sniffer' ? '双级提取' : '静态提取' }}</span>
+            <template v-if="rule.ruleType === 'api'">
+              <span><UiIcon name="check" :size="12" />接口搜索</span>
+              <span><UiIcon name="check" :size="12" />接口选集</span>
+              <span><UiIcon name="check" :size="12" />{{ rule.apiStream ? '接口取流' : '嗅探取流' }}</span>
+            </template>
+            <template v-else>
+              <span><UiIcon name="check" :size="12" />搜索</span>
+              <span><UiIcon name="check" :size="12" />选集</span>
+              <span><UiIcon name="check" :size="12" />{{ rule.streamExtraction?.fallbackMode === 'sniffer' ? '双级提取' : '静态提取' }}</span>
+            </template>
           </div>
         </div>
         <div class="rule-meta">

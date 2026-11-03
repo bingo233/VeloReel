@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import UiIcon from '../components/UiIcon.vue'
-import type { LlmConnectionTestResult } from '../../../shared/types'
+import type { LanStatus, LlmConnectionTestResult } from '../../../shared/types'
 import { DEFAULT_SETTINGS, type AppSettings, type ToastMessage } from '../types'
 import { errorMessage } from '../utils'
 
@@ -19,6 +19,8 @@ const saving = ref(false)
 const keyVisible = ref(false)
 const testing = ref(false)
 const testResult = ref<LlmConnectionTestResult | null>(null)
+const lanStatus = ref<LanStatus | null>(null)
+const lanApplying = ref(false)
 const configurationVersion = ref(0)
 const testedConfigurationVersion = ref(-1)
 const copyFeedback = ref('')
@@ -30,6 +32,45 @@ watch(() => [
   copyFeedback.value = ''
 }, { flush: 'sync' })
 const testResultStale = computed(() => Boolean(testResult.value) && testedConfigurationVersion.value !== configurationVersion.value)
+const lanEndpoints = computed(() =>
+  (lanStatus.value?.addresses ?? []).map((address) => `http://${address}:${lanStatus.value?.port ?? 0}`).join('、')
+)
+
+async function refreshLanStatus(): Promise<void> {
+  try {
+    lanStatus.value = await window.api.lan.status()
+  } catch {
+    lanStatus.value = null
+  }
+}
+
+/** 开关单独即时生效，避免用户以为已开启但仍在等待“保存更改”。 */
+async function toggleLan(event: Event): Promise<void> {
+  if (lanApplying.value) return
+  const target = event.target as HTMLInputElement
+  const enabled = target.checked
+  form.lanEnabled = enabled
+  lanApplying.value = true
+  try {
+    await window.api.settings.save({ lanEnabled: enabled })
+    await refreshLanStatus()
+    if (!enabled) {
+      emit('notify', 'info', '局域网共享已关闭', '本机播放不受影响')
+      return
+    }
+    if (lanStatus.value?.running) {
+      emit('notify', 'success', '局域网共享已开启', `监听 ${lanEndpoints.value || `端口 ${lanStatus.value.port}`}`)
+    } else {
+      emit('notify', 'danger', '局域网服务未能启动', lanStatus.value?.error || '请检查端口是否被占用或防火墙是否放行')
+    }
+  } catch (error) {
+    form.lanEnabled = !enabled
+    target.checked = !enabled
+    emit('notify', 'danger', '切换局域网共享失败', errorMessage(error))
+  } finally {
+    lanApplying.value = false
+  }
+}
 
 function readHeaders(): Record<string, string> | null {
   headersError.value = ''
@@ -104,6 +145,7 @@ async function loadSettings(): Promise<void> {
     Object.assign(form, DEFAULT_SETTINGS, await window.api.settings.get())
     headersJson.value = JSON.stringify(form.llmHttpHeaders, null, 2)
     apiKeyConfigured.value = await window.api.settings.hasApiKey()
+    await refreshLanStatus()
   } catch (error) {
     emit('notify', 'danger', '设置加载失败', errorMessage(error))
   } finally {
@@ -127,7 +169,10 @@ async function saveSettings(): Promise<void> {
       skipIntroSeconds: Math.max(0, Number(form.skipIntroSeconds) || 0),
       skipOutroSeconds: Math.max(0, Number(form.skipOutroSeconds) || 0),
       proxyPrefetchCount: Math.max(0, Math.min(8, Number(form.proxyPrefetchCount) || 0)),
-      proxyCacheMegabytes: Math.max(32, Math.min(512, Number(form.proxyCacheMegabytes) || 128))
+      proxyCacheMegabytes: Math.max(32, Math.min(512, Number(form.proxyCacheMegabytes) || 128)),
+      lanEnabled: Boolean(form.lanEnabled),
+      lanPort: Math.max(1024, Math.min(65535, Number(form.lanPort) || 8790)),
+      deviceName: form.deviceName.trim() || DEFAULT_SETTINGS.deviceName
     }
     const saved = await window.api.settings.save(payload)
     if (newApiKey.value.trim()) {
@@ -137,6 +182,7 @@ async function saveSettings(): Promise<void> {
     Object.assign(form, DEFAULT_SETTINGS, saved)
     headersJson.value = JSON.stringify(saved.llmHttpHeaders, null, 2)
     newApiKey.value = ''
+    await refreshLanStatus()
     emit('notify', 'success', '设置已保存', '新的播放任务会立即使用这些配置')
   } catch (error) {
     emit('notify', 'danger', '保存失败', errorMessage(error))
@@ -310,6 +356,48 @@ onMounted(() => loadSettings())
               <label>片尾 <input v-model.number="form.skipOutroSeconds" type="number" min="0" max="900" /> 秒</label>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <header class="settings-card-header">
+          <span class="settings-card-icon cyan"><UiIcon name="globe" :size="21" /></span>
+          <div><h2>局域网共享</h2><p>同一 Wi-Fi 下的手机与电视可直接访问，无需配对。</p></div>
+          <span class="config-state" :class="{ ready: lanStatus?.running }">
+            <i></i>{{ lanStatus?.running ? '运行中' : form.lanEnabled ? '未启动' : '已关闭' }}
+          </span>
+        </header>
+        <div class="setting-rows">
+          <label class="setting-row">
+            <span><strong>开启局域网服务</strong><small>关闭后立即停止监听，不影响本机播放</small></span>
+            <input
+              :checked="form.lanEnabled"
+              class="switch-input"
+              type="checkbox"
+              :disabled="lanApplying"
+              @change="toggleLan"
+            />
+          </label>
+          <div class="setting-row">
+            <span><strong>服务名称</strong><small>设备发现时显示的名字</small></span>
+            <input v-model="form.deviceName" class="lan-field" type="text" maxlength="40" />
+          </div>
+          <label class="setting-row">
+            <span><strong>HTTP 端口</strong><small>默认 8790，保存后立即按新端口重启</small></span>
+            <input v-model.number="form.lanPort" class="lan-field port" type="number" min="1024" max="65535" />
+          </label>
+        </div>
+        <div v-if="lanStatus?.error" class="info-callout">
+          <UiIcon name="alert" :size="17" />
+          <p>服务启动失败：{{ lanStatus.error }}。请检查端口是否被占用或防火墙是否放行。</p>
+        </div>
+        <div v-else-if="lanStatus?.running" class="info-callout">
+          <UiIcon name="check" :size="17" />
+          <p>正在监听 {{ lanEndpoints || `端口 ${lanStatus.port}` }}，同一 Wi-Fi 下无需配对即可访问。</p>
+        </div>
+        <div v-else class="info-callout">
+          <UiIcon name="alert" :size="17" />
+          <p>当前未开启，仅本机可以访问内容。请勿在公共网络上开启。</p>
         </div>
       </section>
 

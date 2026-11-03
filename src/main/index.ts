@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, protocol, session } from 'electron'
 import { AppStorage } from './storage'
 import { HlsProxyServer } from './hlsProxyServer'
+import { LanService } from './lanService'
 import { LlmRuleGenerator } from './llmRuleGenerator'
 import { registerIpcHandlers } from './ipcHandlers'
 import { StreamExtractor } from './streamExtractor'
@@ -21,6 +22,7 @@ let mainWindow: BrowserWindow | null = null
 let disposeIpc: (() => void) | undefined
 let storage: AppStorage | undefined
 let proxy: HlsProxyServer | undefined
+let lan: LanService | undefined
 let extractor: StreamExtractor | undefined
 let shutdownStarted = false
 let shutdownComplete = false
@@ -69,9 +71,11 @@ async function bootstrap(): Promise<void> {
   const resolver = new StreamResolver(storage, extractor)
   const vod = new VodService(storage)
   const ruleGenerator = new LlmRuleGenerator(storage, extractor)
+  lan = new LanService(storage, vod, resolver, proxy, app.getVersion())
   const proxyPort = await proxy.start()
   configureRendererNetwork(session.defaultSession, rendererUrl, `http://127.0.0.1:${proxyPort}`)
-  disposeIpc = registerIpcHandlers({ storage, proxy, resolver, vod, ruleGenerator, rendererUrl, getPlayerContents: () => mainWindow?.webContents })
+  await lan.apply(storage.getSettings())
+  disposeIpc = registerIpcHandlers({ storage, proxy, resolver, vod, ruleGenerator, lan, rendererUrl, getPlayerContents: () => mainWindow?.webContents })
   mainWindow = createWindow()
 }
 
@@ -80,6 +84,7 @@ async function shutdown(): Promise<void> {
   disposeIpc = undefined
   extractor?.dispose()
   storage?.flush()
+  await lan?.stop()
   await proxy?.stop()
   await closePublicConnections()
 }
