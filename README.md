@@ -8,6 +8,16 @@
 
 > 请仅连接你有权访问的内容，并遵守内容提供方的服务条款与当地法律。本项目不绕过 DRM、付费墙或访问控制。
 
+## 截图
+
+| 桌面端 · 继续观看 | 桌面端 · 站点规则 |
+| --- | --- |
+| ![桌面端继续观看](docs/screenshots/desktop-library.png) | ![桌面端站点规则](docs/screenshots/desktop-rules.png) |
+
+| 手机端 · 观看历史 |
+| --- |
+| <img src="docs/screenshots/mobile-history.jpg" width="320" alt="手机端观看历史"> |
+
 ## 开发
 
 ```bash
